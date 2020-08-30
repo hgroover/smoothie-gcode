@@ -29,10 +29,11 @@ def timed_cmd(ms, cmd, response_timeout_ms=300000):
     global TIMEOUT_COUNT
     global PASS_TIMEOUT_COUNT
     started = time.monotonic()
-    LAST_SENT=str(cmd, encoding='utf-8')
+    # cmd is now str
+    LAST_SENT=cmd
     prev_timeout = ms.gettimeout()
     ms.settimeout(response_timeout_ms / 1000)
-    ms.send(cmd)
+    ms.send(cmd.encode('utf-8'))
     # Minimum turnaround time is 0.5s
     time.sleep(0.5)
     try:
@@ -57,8 +58,10 @@ def timed_cmd(ms, cmd, response_timeout_ms=300000):
         else:
             LAST_RESPONSE_MSG = ""
     # For status query, parse <statusword|MPos|WPos>
-    print('sent:', str(cmd, encoding='utf-8').strip(), 'recvd:', LAST_RESPONSE, LAST_RESPONSE_MSG, 'elapsed:', elapsed)
-    sys.stdout.flush()
+    # FIXME set parameters for verbosity. For now report anything taking 1s or longer
+    if elapsed >= 1.0:
+        print('sent:', cmd.strip(), 'recvd:', LAST_RESPONSE, LAST_RESPONSE_MSG, 'elapsed:', elapsed)
+        sys.stdout.flush()
 
 # Get available text with specified timeout in ms
 def get_text(ms, timeout_ms):
@@ -115,12 +118,29 @@ def get_status(ms):
 #### Main entry ####
 
 # Parse command line
-TARGET_PASSES=2
+TARGET_PASSES=1
 
 # Input file
 INPUT_FILE='limit-test1.gcode'
 
+# Attempt to read entire gcode file. This may fail on really large files.
+# Must test with 10s of MB and up.
+try:
+    ifile = open(INPUT_FILE, 'r')
+    GCode = ifile.readlines()
+    ifile.close()
+except:
+    print('Failed to open gcode input {0}'.format(INPUT_FILE))
+    sys.exit(1)
 
+# Analyze for comments
+total_lines = len(GCode)
+comment_lines = 0
+for line in GCode:
+    if line.startswith('('):
+        comment_lines = comment_lines + 1
+
+print('Input file {0} has {1} comment lines, {2} out of {3} active (comments will not be sent)'.format(INPUT_FILE, comment_lines, total_lines - comment_lines, total_lines))
 
 try:
     print('Attempting connection via {0} at {1}:{2}'.format('TCP', ADDR, PORT))
@@ -145,70 +165,53 @@ try:
     s = get_text(msock, 1000)
     if s != "":
         print('Additional text: {0}'.format(s))
-    get_status(msock)
-    # If we interrupt a run, we may get an empty status
-    if STATUS == '':
-        print('Trying status again:')
-        get_status(msock)
-    print('Status:', STATUS)
-    if STATUS == 'Alarm':
-        print('Need to clear alarm')
-        timed_cmd(msock, b'$X\n')
-        if LAST_RESPONSE != 'ok':
-            print('Did not get ok:', LAST_RESPONSE)
-            sys.exit(1)
-    elif STATUS == 'Failed':
-        # A previous operation failed. Attempt a wait
-        print('A previous operation failed, attempting to clear failure...')
-        timed_cmd(msock, b'M400\n')
-        get_status(msock)
-        print('Response from wait: {0} {1} status: {2}'.format(LAST_RESPONSE, LAST_RESPONSE_MSG, STATUS))
-        if STATUS != 'Idle':
-            print('Unable to clear failure')
-            sys.exit(1)
-    elif STATUS != 'Idle':
-        print('Status must be idle, got:', STATUS)
-        sys.exit(1)
     # Supposed to be time in milliseconds - Smoothie interprets it as seconds
     #timed_cmd(msock, b'G4 P10\n')
     for rpass in range(1, 1 + TARGET_PASSES):
         print('starting pass', rpass, 'of', TARGET_PASSES)
         start_pass = time.monotonic()
-        PASS_TIMEOUT_COUNT = 0
         get_status(msock)
-        if STATUS != 'Idle':
-            print('Non-idle status:', STATUS)
+        # If we interrupt a run, we may get an empty status
+        if STATUS == '':
+            print('Trying status again:')
+            get_status(msock)
+        print('Status:', STATUS)
+        if STATUS == 'Alarm':
+            print('Need to clear alarm')
+            timed_cmd(msock, b'$X\n')
+            if LAST_RESPONSE != 'ok':
+                print('Did not get ok:', LAST_RESPONSE)
+                sys.exit(1)
+        elif STATUS == 'Failed':
+            # A previous operation failed. Attempt a wait
+            print('A previous operation failed, attempting to clear failure...')
+            timed_cmd(msock, b'M400\n')
+            get_status(msock)
+            print('Response from wait: {0} {1} status: {2}'.format(LAST_RESPONSE, LAST_RESPONSE_MSG, STATUS))
+            if STATUS != 'Idle':
+                print('Unable to clear failure')
+                sys.exit(1)
+        elif STATUS != 'Idle':
+            print('Status must be idle, got:', STATUS)
+            #sys.exit(1)
             break
-        timed_cmd(msock, b'G17 G90\n')
-        timed_cmd(msock, b'G21\n')
-        timed_cmd(msock, b'G54\n')
-        timed_cmd(msock, b'M42\n')
-        # Smoothie switches on for ANY value of S, including 0
-        #timed_cmd(msock, b'M3 S0.0\n')
-        timed_cmd(msock, b'G0 Z14.0 F60\n')
-        if LAST_RESPONSE == 'error':
-            sys.exit(1)
-        timed_cmd(msock, b'G0 X650.000 Y800.000 F1900\n')
-        if LAST_RESPONSE == 'error':
-            sys.exit(1)
-        # Wait for queued commands to complete for up to 4 minutes
-        timed_cmd(msock, b'M400\n', 240000)
-        if LAST_RESPONSE == 'error':
-            sys.exit(1)
-        timed_cmd(msock, b'G1 Z8.8 F160.0\n')
-        if LAST_RESPONSE == 'error':
-            sys.exit(1)
-        timed_cmd(msock, b'G2 X650.0 Y800.0, I-270.0 J0.0 F480.0\n')
-        if LAST_RESPONSE == 'error':
-            sys.exit(1)
-        timed_cmd(msock, b'G0 Z12\n')
-        # Also takes 50 seconds sometimes
-        timed_cmd(msock, b'M5\n')
-        timed_cmd(msock, b'M43\n')
-        timed_cmd(msock, b'G0 X10 Y10 F1900\n')
-        timed_cmd(msock, b'G17 G90\n')
-        # End program. Does nothing on smoothie but takes 50 seconds. Waiting for completion?
-        timed_cmd(msock, b'M2\n', 450000)
+        PASS_TIMEOUT_COUNT = 0
+        #get_status(msock)
+        #if STATUS != 'Idle':
+        #    print('Non-idle status:', STATUS)
+        #    break
+        line_number = 1
+        for line in GCode:
+            if not line.startswith('('):
+                # Smoothie switches on if spindle configured in switch mode for ANY value of S, including 0
+                if line.startswith('M3'):
+                    print('Spindle control: {0}'.format(line.strip()))
+                # FIXME use longer timeout for M400
+                timed_cmd(msock, line)
+                if LAST_RESPONSE == 'error':
+                    print('Exiting, error condition at line {0}'.format(line_number))
+                    sys.exit(1)
+            line_number = line_number + 1
         elapsed_pass = time.monotonic() - start_pass
         print('pass', rpass, 'total time', elapsed_pass, 'timeouts:', PASS_TIMEOUT_COUNT)
     print('Final pass complete, total timeout count:', TIMEOUT_COUNT)
