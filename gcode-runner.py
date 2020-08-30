@@ -112,19 +112,27 @@ def get_status(ms):
     WPOS[2] = float(wp_str[2])
     FEEDS[0] = float(f_str[0])
     FEEDS[1] = float(f_str[1])
-    print('Raw status:', s.strip(), 'parsed:(', STATUS, ') prev timeout:', prev_timeout, 'MP:', MPOS)
+    print('Raw status:', s.strip(), 'parsed:(', STATUS, ') prev timeout:', prev_timeout, 'MP:', MPOS, 'WP:', WPOS)
     return STATUS
 
 #### Main entry ####
 
 # Parse command line
-TARGET_PASSES=1
+TARGET_PASSES=4
+
+# Actions to take
+WITH_HOME=0
+WITH_INIT=0
+WITH_FILE=1
+
+# Arbitrary init string
+INIT_CMD='G0 Z20.0\n'
 
 # Input file
 INPUT_FILE='limit-test1.gcode'
 
 # Attempt to read entire gcode file. This may fail on really large files.
-# Must test with 10s of MB and up.
+# Must test with 10's of MB and up.
 try:
     ifile = open(INPUT_FILE, 'r')
     GCode = ifile.readlines()
@@ -178,14 +186,14 @@ try:
         print('Status:', STATUS)
         if STATUS == 'Alarm':
             print('Need to clear alarm')
-            timed_cmd(msock, b'$X\n')
+            timed_cmd(msock, '$X\n')
             if LAST_RESPONSE != 'ok':
                 print('Did not get ok:', LAST_RESPONSE)
                 sys.exit(1)
         elif STATUS == 'Failed':
             # A previous operation failed. Attempt a wait
             print('A previous operation failed, attempting to clear failure...')
-            timed_cmd(msock, b'M400\n')
+            timed_cmd(msock, 'M400\n')
             get_status(msock)
             print('Response from wait: {0} {1} status: {2}'.format(LAST_RESPONSE, LAST_RESPONSE_MSG, STATUS))
             if STATUS != 'Idle':
@@ -200,18 +208,35 @@ try:
         #if STATUS != 'Idle':
         #    print('Non-idle status:', STATUS)
         #    break
+        if WITH_HOME:
+            print('Homing...')
+            timed_cmd(msock, 'G28.2 X0 Y0\n')
+            if LAST_RESPONSE == 'error':
+                break
+            timed_cmd(msock, 'G92 X0 Y0\n')
+            # Wait for motion to complete
+            timed_cmd(msock, 'M400\n')
+            get_status(msock)
+            print('New status after home/reset: {0}\n'.format(STATUS))
+        if WITH_INIT:
+            print('Sending init cmd: {0}'.format(INIT_CMD.strip()))
+            timed_cmd(msock, INIT_CMD)
+            timed_cmd(msock, 'M400\n')
+            get_status(msock)
+            print('New status after init: {0}\n'.format(STATUS))
         line_number = 1
-        for line in GCode:
-            if not line.startswith('('):
-                # Smoothie switches on if spindle configured in switch mode for ANY value of S, including 0
-                if line.startswith('M3'):
-                    print('Spindle control: {0}'.format(line.strip()))
-                # FIXME use longer timeout for M400
-                timed_cmd(msock, line)
-                if LAST_RESPONSE == 'error':
-                    print('Exiting, error condition at line {0}'.format(line_number))
-                    sys.exit(1)
-            line_number = line_number + 1
+        if WITH_FILE:
+            for line in GCode:
+                if not line.startswith('('):
+                    # Smoothie switches on if spindle configured in switch mode for ANY value of S, including 0
+                    if line.startswith('M3'):
+                        print('Spindle control: {0}'.format(line.strip()))
+                    # FIXME use longer timeout for M400
+                    timed_cmd(msock, line)
+                    if LAST_RESPONSE == 'error':
+                        print('Exiting, error condition at line {0}'.format(line_number))
+                        sys.exit(1)
+                line_number = line_number + 1
         elapsed_pass = time.monotonic() - start_pass
         print('pass', rpass, 'total time', elapsed_pass, 'timeouts:', PASS_TIMEOUT_COUNT)
     print('Final pass complete, total timeout count:', TIMEOUT_COUNT)
