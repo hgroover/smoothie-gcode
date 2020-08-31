@@ -118,15 +118,19 @@ def get_status(ms):
 #### Main entry ####
 
 # Parse command line
-TARGET_PASSES=4
+TARGET_PASSES=3
 
 # Actions to take
 WITH_HOME=0
-WITH_INIT=0
+WITH_INIT=1
 WITH_FILE=1
 
 # Arbitrary init string
-INIT_CMD='G0 Z20.0\n'
+INIT_CMD='G0 X500 Y800 F2000\n'
+INIT_CMD='G30 Z2.0\n'
+INIT_CMD='G0 Z0\n'
+INIT_CMD='G0 Z10 X10 Y10 F2000\n'
+INIT_CMD='G92 Z10 X10 Y10\n'
 
 # Input file
 INPUT_FILE='limit-test1.gcode'
@@ -166,6 +170,7 @@ try:
     s = get_text(msock, 1000)
     if s != "":
         print('Still starting:', s.strip())
+    start_run = time.monotonic()
     # Query status - if alarm, send $X to clear and try again
     #timed_cmd(msock, b'get status\n')
     # Smoothie will send <status|mpos|wpos>\n[GC:...] in response to ?$G
@@ -208,7 +213,7 @@ try:
         #if STATUS != 'Idle':
         #    print('Non-idle status:', STATUS)
         #    break
-        if WITH_HOME:
+        if WITH_HOME and rpass == 1:
             print('Homing...')
             timed_cmd(msock, 'G28.2 X0 Y0\n')
             if LAST_RESPONSE == 'error':
@@ -238,8 +243,9 @@ try:
                         sys.exit(1)
                 line_number = line_number + 1
         elapsed_pass = time.monotonic() - start_pass
-        print('pass', rpass, 'total time', elapsed_pass, 'timeouts:', PASS_TIMEOUT_COUNT)
-    print('Final pass complete, total timeout count:', TIMEOUT_COUNT)
+        print('pass {0} total time {1:.3g}s, timeouts: {2}'.format(rpass, elapsed_pass, PASS_TIMEOUT_COUNT))
+    elapsed_run = time.monotonic() - start_run
+    print('Final pass completed in {0:.3g}s, total timeout count: {1}'.format(elapsed_run, TIMEOUT_COUNT))
 except OSError as e:
     print('Exception:', e)
     print('last cmd:', LAST_SENT)
