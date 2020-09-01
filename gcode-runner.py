@@ -74,13 +74,13 @@ def get_text(ms, timeout_ms):
     ms.settimeout(prev_timeout)
     return s
 
-def get_status(ms):
+def get_status(ms, status_timeout_ms=4000):
     global STATUS
     global MPOS
     global WPOS
     global FEEDS
     prev_timeout = ms.gettimeout()
-    ms.settimeout(1)
+    ms.settimeout(status_timeout_ms/1000)
     # Smoothie sends both <status|mpos|wpos|feedrates> AND [GC:... in response to ?$G
     ms.send(b'get status\n')
     try:
@@ -118,22 +118,26 @@ def get_status(ms):
 #### Main entry ####
 
 # Parse command line
-TARGET_PASSES=3
+TARGET_PASSES=1
 
 # Actions to take
 WITH_HOME=0
-WITH_INIT=0
-WITH_FILE=1
+WITH_INIT=1
+WITH_FILE=0
+WITH_POST=1
 
 # Arbitrary init string
 #INIT_CMD='G0 X500 Y800 F2000 G0 Z0 F200\n'
 #INIT_CMD='G30 Z2.0\n'
 #INIT_CMD='G0 Z0\n'
 INIT_CMD='G0 Z10 X10 Y10 F2000\n'
-#INIT_CMD='G92 Z10 X10 Y10\n'
+INIT_CMD='G92 Z10 X10 Y10\n'
 
 # Input file
 INPUT_FILE='limit-test1-faster.gcode'
+
+# Post-run command
+POST_CMD='G0 Z10 X10 Y10 F2000\n'
 
 # Attempt to read entire gcode file. This may fail on really large files.
 # Must test with 10's of MB and up.
@@ -154,6 +158,8 @@ for line in GCode:
 
 print('Input file {0} has {1} comment lines, {2} out of {3} active (comments will not be sent)'.format(INPUT_FILE, comment_lines, total_lines - comment_lines, total_lines))
 
+start_run = time.monotonic()
+line_number = 0
 try:
     print('Attempting connection via {0} at {1}:{2}'.format('TCP', ADDR, PORT))
     socket.setdefaulttimeout(60)
@@ -187,7 +193,11 @@ try:
         # If we interrupt a run, we may get an empty status
         if STATUS == '':
             print('Trying status again:')
-            get_status(msock)
+            get_status(msock, 6000)
+        # Try again if we timed out
+        if STATUS == 'Timeout':
+            print('Status timeout, trying again:')
+            get_status(msock, 10000)
         print('Status:', STATUS)
         if STATUS == 'Alarm':
             print('Need to clear alarm')
@@ -195,7 +205,7 @@ try:
             if LAST_RESPONSE != 'ok':
                 print('Did not get ok:', LAST_RESPONSE)
                 sys.exit(1)
-        elif STATUS == 'Failed':
+        elif STATUS.startswith('Failed'):
             # A previous operation failed. Attempt a wait
             print('A previous operation failed, attempting to clear failure...')
             timed_cmd(msock, 'M400\n')
@@ -213,7 +223,7 @@ try:
         #if STATUS != 'Idle':
         #    print('Non-idle status:', STATUS)
         #    break
-        if WITH_HOME and rpass == 1:
+        if WITH_HOME:
             print('Homing...')
             timed_cmd(msock, 'G28.2 X0 Y0\n')
             if LAST_RESPONSE == 'error':
@@ -223,7 +233,7 @@ try:
             timed_cmd(msock, 'M400\n')
             get_status(msock)
             print('New status after home/reset: {0}\n'.format(STATUS))
-        if WITH_INIT:
+        if WITH_INIT and rpass == 1:
             print('Sending init cmd: {0}'.format(INIT_CMD.strip()))
             timed_cmd(msock, INIT_CMD)
             timed_cmd(msock, 'M400\n')
@@ -244,11 +254,19 @@ try:
                 line_number = line_number + 1
         elapsed_pass = time.monotonic() - start_pass
         print('pass {0} total time {1:.4f}s, timeouts: {2}'.format(rpass, elapsed_pass, PASS_TIMEOUT_COUNT))
+    if WITH_POST:
+        print('Final pass completed, sending post-run command {0}'.format(POST_CMD))
+        timed_cmd(msock, POST_CMD)
+        timed_cmd(msock, 'M400\n')
+        get_status(msock)
+        print('New status after post-run cmd: {0}\n'.format(STATUS))
     elapsed_run = time.monotonic() - start_run
     print('Final pass completed in {0:.4f}s, total timeout count: {1}'.format(elapsed_run, TIMEOUT_COUNT))
 except OSError as e:
     print('Exception:', e)
-    print('last cmd:', LAST_SENT)
+    print('last cmd:', LAST_SENT, 'line number:', line_number)
+    elapsed_run = time.monotonic() - start_run
+    print('Elapsed time: {0:.4f}s'.format(elapsed_run))
     sys.exit(1)
 
 msock.close()
